@@ -13,17 +13,15 @@ import (
 
 func Signup(c *gin.Context) {
 	var body struct {
-		Email    string
-		Password string
+		Email    string `json:"email" binding:"required"`
+		Password string `json:"password" binding:"required"`
 	}
-
 	if c.Bind(&body) != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Failed to read body",
 		})
 		return
 	}
-
 	hash, err := bcrypt.GenerateFromPassword([]byte(body.Password), 10)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -31,7 +29,6 @@ func Signup(c *gin.Context) {
 		})
 		return
 	}
-
 	user := models.User{Email: body.Email, Password: string(hash)}
 	result := initializers.DB.Create(&user)
 	if result.Error != nil {
@@ -40,7 +37,6 @@ func Signup(c *gin.Context) {
 		})
 		return
 	}
-
 	c.JSON(http.StatusOK, gin.H{})
 }
 
@@ -49,14 +45,12 @@ func Login(c *gin.Context) {
 		Email    string
 		Password string
 	}
-
 	if c.Bind(&body) != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Failed to read body",
 		})
 		return
 	}
-
 	var user *models.User
 	initializers.DB.First(&user, "email = ?", body.Email)
 	if user.ID == 0 {
@@ -65,19 +59,16 @@ func Login(c *gin.Context) {
 		})
 		return
 	}
-
 	if bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(body.Password)) != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid email or password",
 		})
 		return
 	}
-
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub": user.ID,
 		"exp": time.Now().Add(time.Hour * 24 * 30).Unix(),
 	})
-
 	tokenString, err := token.SignedString([]byte(os.Getenv("SECRET")))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -85,7 +76,6 @@ func Login(c *gin.Context) {
 		})
 		return
 	}
-
 	c.JSON(http.StatusOK, gin.H{
 		"token": tokenString,
 	})
