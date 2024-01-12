@@ -28,8 +28,7 @@ func main() {
 	}
 
 	// Item routes
-	//i := r.Group("/item", middlewares.Authorization)
-	i := r.Group("/item")
+	i := r.Group("/item", middlewares.Authorization)
 	i.Use(middlewares.ElasticsearchMiddleware(initializers.ES))
 	{
 		i.POST("/", controllers.ItemCreate)
