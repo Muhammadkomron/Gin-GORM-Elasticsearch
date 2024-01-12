@@ -11,25 +11,31 @@ func init() {
 	initializers.LoadEnvVariables()
 	initializers.ConnectDatabase()
 	initializers.SyncDatabase()
-	initializers.ConnectElastic()
+	initializers.ConnectElasticsearch()
 	initializers.CheckElasticIndex()
 }
 
 func main() {
 	r := gin.Default()
-	u := r.Group("/auth")
+	r.Use(middlewares.DatabaseMiddleware(initializers.DB))
+
+	// Auth routes
+	a := r.Group("/auth")
 	{
-		u.POST("/signup/", controllers.Signup)
-		u.POST("/login/", controllers.Login)
-		u.POST("/validate/", middlewares.RequireAuth, controllers.Validate)
+		a.POST("/signup/", controllers.Signup)
+		a.POST("/login/", controllers.Login)
+		a.POST("/validate/", middlewares.Authorization, controllers.Validate)
 	}
-	//i := r.Group("/item", middlewares.RequireAuth)
+
+	// Item routes
+	//i := r.Group("/item", middlewares.Authorization)
 	i := r.Group("/item")
+	i.Use(middlewares.ElasticsearchMiddleware(initializers.ES))
 	{
 		i.POST("/", controllers.ItemCreate)
 		i.GET("/", controllers.ItemFindAll)
 		i.GET("/:id/", controllers.ItemFindOne)
-		i.POST("/:id/", controllers.ItemUpdate)
+		i.PUT("/:id/", controllers.ItemUpdate)
 		i.DELETE("/:id/", controllers.ItemDelete)
 	}
 	r.Run()

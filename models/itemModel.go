@@ -5,6 +5,8 @@ import (
 	"gorm.io/gorm"
 )
 
+var ItemIndex = "item"
+
 type Color string
 
 const (
@@ -30,6 +32,6 @@ type Item struct {
 	gorm.Model
 	Title string `gorm:"unique"`
 	//Color       Color  `gorm:"type:enum('Red', 'Blue', 'Green', 'Yellow', 'Purple', 'Orange', 'Pink') default:'Red'"`
-	Price       int `gorm:"default:0"`
+	Price       uint `gorm:"default:0"`
 	Description string
 }

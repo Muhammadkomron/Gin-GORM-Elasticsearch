@@ -2,47 +2,53 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"gin-gorm-tutorial/initializers"
 	"gin-gorm-tutorial/models"
 	"gin-gorm-tutorial/utils"
+	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"math"
 	"net/http"
+	"strconv"
 )
 
-var body struct {
-	Title string `json:"title" binding:"required"`
+type itemBody struct {
 	//Color       models.Color `json:"color" binding:"required" validate:"oneof=Red Blue Green Yellow Purple Orange Pink"`
-	Price       int    `json:"price" binding:"required"`
+	Title       string `json:"title" binding:"required"`
+	Price       uint   `json:"price" binding:"required"`
 	Description string `json:"description" binding:"required"`
 }
 
 func ItemCreate(c *gin.Context) {
-	if c.Bind(&body) != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Failed to read body",
-		})
+	db, _ := c.Value("db").(*gorm.DB)
+	es, _ := c.Value("es").(*elasticsearch.TypedClient)
+	var b itemBody
+	if c.Bind(&b) != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read body"})
 		return
 	}
-	tx := initializers.DB.Begin()
-	item := models.Item{Title: body.Title, Price: body.Price, Description: body.Description}
-	if err := initializers.DB.Create(&item).Error; err != nil {
+	var item models.Item
+	db.First(&item, "title = ?", b.Title)
+	if item.ID != 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Item with this title already exists"})
+		return
+	}
+	tx := db.Begin()
+	item = models.Item{Title: b.Title, Price: b.Price, Description: b.Description}
+	// Creating Item in DB
+	if err := db.Create(&item).Error; err != nil {
 		tx.Rollback()
-		fmt.Println(err)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Failed to create item in the DB",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to create item in the DB"})
 		return
 	}
-	_, err := initializers.ES.Index("item").
+	// Creating Item in ES
+	if _, err := es.Index("item").
+		Id(strconv.Itoa(int(item.ID))).
 		Request(item).
-		Do(context.Background())
-	if err != nil {
+		Do(context.Background()); err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Failed to create item in the ES",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to create item in the ES"})
 		return
 	}
 	tx.Commit()
@@ -50,65 +56,101 @@ func ItemCreate(c *gin.Context) {
 }
 
 func ItemFindAll(c *gin.Context) {
-	pagination := utils.GeneratePaginationFromRequest(c)
-	itemLists, total, err := utils.GetAllESItems(&pagination)
+	//db, _ := c.Value("db").(*gorm.DB)
+	es, _ := c.Value("es").(*elasticsearch.TypedClient)
+	pagination, err := utils.GeneratePaginationFromRequest(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": err,
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read query"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"BookList": itemLists,
-		"MaxPage":  total / pagination.Limit,
-		"Total":    total,
-	})
+	// Fetching paginated Item list from DB
+	//itemList, total, err := utils.GetItemList(db, &pagination)
+	// Fetching paginated Item list from ES
+	itemList, total, err := utils.GetESItemList(es, &pagination)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err})
+		return
+	}
+	maxPage := int(math.Ceil(float64(total) / float64(pagination.Limit)))
+	c.JSON(http.StatusOK, gin.H{"BookList": itemList, "MaxPage": maxPage, "Total": total})
 }
 
 func ItemFindOne(c *gin.Context) {
-	var item models.Item
+	db, _ := c.Value("db").(*gorm.DB)
 	id := c.Param("id")
-	if err := initializers.DB.First(&item, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
-		return
-	}
-	r, err := json.Marshal(item)
+	// Fetching Item from ES
+	item, err := utils.GetOneItem(db, id)
+	fmt.Println(item)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Can't marshal to json: {}",
-		})
-	}
-	c.JSON(http.StatusOK, r)
-}
-
-func ItemUpdate(c *gin.Context) {
-	id := c.Param("id")
-	if c.Bind(&body) != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Failed to read body",
-		})
-		return
-	}
-	var item models.Item
-	if err := initializers.DB.First(&item, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
-		return
-	}
-	if err := initializers.DB.Model(&item).
-		Updates(&models.Item{Title: body.Title, Price: body.Price, Description: body.Description}).
-		Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update item"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err})
 		return
 	}
 	c.JSON(http.StatusOK, item)
 }
 
-func ItemDelete(c *gin.Context) {
+func ItemUpdate(c *gin.Context) {
+	db, _ := c.Value("db").(*gorm.DB)
+	es, _ := c.Value("es").(*elasticsearch.TypedClient)
 	id := c.Param("id")
-	if (initializers.DB.First(&models.Item{}, id).RowsAffected == 0) {
+	var b itemBody
+	if c.Bind(&b) != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read body"})
+		return
+	}
+	var item *models.Item
+	db.Where("id != ?", id).First(&item, "title = ?", b.Title)
+	if item.ID != 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Item with this title already exists"})
+		return
+	}
+	tx := db.Begin()
+	// Fetching Item from DB
+	item, err := utils.GetOneItem(db, id)
+	if err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusBadRequest, gin.H{"error": err})
+		return
+	}
+	// Updating Item in DB
+	if err := db.Model(&item).
+		Updates(&models.Item{Title: b.Title, Price: b.Price, Description: b.Description}).
+		Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to update item in the DB"})
+		return
+	}
+	// Updating Item in ES
+	if _, err := es.Update(models.ItemIndex, id).Doc(b).Do(context.Background()); err != nil {
+		tx.Rollback()
+		fmt.Println(err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to update item in the ES"})
+		return
+	}
+	tx.Commit()
+	c.JSON(http.StatusOK, item)
+}
+
+func ItemDelete(c *gin.Context) {
+	db, _ := c.Value("db").(*gorm.DB)
+	es, _ := c.Value("es").(*elasticsearch.TypedClient)
+	id := c.Param("id")
+	tx := db.Begin()
+	if (db.First(&models.Item{}, id).RowsAffected == 0) {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
 		return
 	}
-	initializers.DB.Delete(&models.Item{}, id)
+	// Deleting Item from DB
+	if err := db.Delete(&models.Item{}, id).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusBadRequest, gin.H{"error": err})
+		return
+	}
+	// Deleting Item from ES
+	if _, err := es.Delete(models.ItemIndex, id).Do(context.Background()); err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusBadRequest, gin.H{"error": err})
+		return
+	}
+	tx.Commit()
 	c.JSON(http.StatusOK, gin.H{"message": "Item deleted successfully"})
 }
